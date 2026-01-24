@@ -1,0 +1,15 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: solar-sync-job
+spec:
+  schedule: "0 2 * * *"   # 2 AM every day
+  jobTemplate:
+    spec:
+      backoffLimit: 3
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: solar-sync
+            image: yourname/solar-sync:latest
