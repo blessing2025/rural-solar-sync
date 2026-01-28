@@ -1,0 +1,159 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: solar-sync-cronjob
+  namespace: default
+  labels:
+    app: solar-sync
+    component: cronjob
+spec:
+  # Scheduled synchronization at 2 AM daily
+  schedule: "0 2 * * *"
+  
+  # Keep last 3 successful and 1 failed job
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  
+  # Job will be considered failed if not completed in 30 minutes
+  startingDeadlineSeconds: 1800
+  
+  # Concurrency policy: allow only one job at a time
+  concurrencyPolicy: Forbid
+  
+  jobTemplate:
+    metadata:
+      labels:
+        app: solar-sync
+        job-type: scheduled-sync
+    spec:
+      # Allow 3 retries if job fails
+      backoffLimit: 3
+      
+      # Job must complete within 10 minutes
+      activeDeadlineSeconds: 600
+      
+      template:
+        metadata:
+          labels:
+            app: solar-sync
+            job-type: scheduled-sync
+          annotations:
+            description: "Daily solar grid sync to central database at 2 AM"
+        
+        spec:
+          serviceAccountName: solar-sync
+          
+          # Security context for pod
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            fsGroup: 1000
+          
+          # Restart policy for intermittent connectivity
+          restartPolicy: OnFailure
+          
+          # Terminate gracefully within 30 seconds
+          terminationGracePeriodSeconds: 30
+          
+          containers:
+          - name: solar-sync
+            image: solar-sync:latest
+            imagePullPolicy: IfNotPresent
+            
+            # Environment variables for rural grid configuration
+            env:
+            - name: VILLAGE_ID
+              value: "Bamenda"
+            - name: POWER_KW
+              value: "120"
+            - name: API_URL
+              value: "http://central-database-service:8000/api/solar"
+            - name: MAX_RETRIES
+              value: "5"
+            - name: RETRY_INTERVAL
+              value: "10"
+            - name: LOCAL_CACHE_PATH
+              value: "/var/cache/solar-sync/cache.json"
+            
+            # Resource limits to prevent cluster resource exhaustion
+            resources:
+              requests:
+                cpu: 100m
+                memory: 128Mi
+              limits:
+                cpu: 500m
+                memory: 256Mi
+            
+            # Volume mounts for local caching
+            volumeMounts:
+            - name: cache-volume
+              mountPath: /var/cache/solar-sync
+            - name: logs-volume
+              mountPath: /var/log/solar-sync
+            
+            # Security context for container
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: false
+              capabilities:
+                drop:
+                - ALL
+          
+          # Volumes for data persistence and caching
+          volumes:
+          - name: cache-volume
+            emptyDir:
+              medium: Memory
+              sizeLimit: 10Mi
+          - name: logs-volume
+            emptyDir:
+              sizeLimit: 50Mi
+          
+          # Affinity for node selection (optional)
+          affinity:
+            nodeAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+              - weight: 100
+                preference:
+                  matchExpressions:
+                  - key: node-type
+                    operator: In
+                    values:
+                    - edge
+                    - gateway
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: solar-sync-cronjob-config
+  namespace: default
+  labels:
+    app: solar-sync
+    component: cronjob
+data:
+  # CronJob retry strategy documentation
+  retry-strategy: |
+    Schedule: Daily at 2 AM (UTC)
+    Max Retries: 5 attempts
+    Retry Interval: Exponential backoff (10s, 20s, 30s, 40s, 50s)
+    Total Timeout: ~2.5 minutes per job execution
+    
+  # Local caching strategy for intermittent connectivity
+  caching-strategy: |
+    - All data synced from edge devices stored in local cache
+    - Cache persists between retry attempts
+    - Failed syncs marked with timestamp for later retry
+    - Cache size limit: 10MB (in-memory)
+  
+  # Network failure handling
+  network-resilience: |
+    - Timeout per request: 15 seconds
+    - Connection failures trigger automatic retry
+    - DNS resolution failures handled gracefully
+    - Exponential backoff prevents overwhelming network
+    
+  # Monitoring and alerting
+  monitoring: |
+    Job Status: Check via kubectl get jobs
+    Logs: kubectl logs -l job-type=scheduled-sync
+    Metrics: Monitor sync success rate, latency, and retry counts
